@@ -54,9 +54,61 @@ jobs:
     uses: burnt-labs/xion/.github/workflows/integration-tests.yml@main
     secrets: inherit
 
+  build-darwin-images:
+    name: Build Darwin Images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set Go Version
+        run: sed -En 's/^go (.*)$/GO_VERSION=\1/p' go.mod >> $GITHUB_ENV
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build darwin all
+        run: |
+          make build-darwin-all
+
+      - name: Rename darwin binaries
+        run: |
+          for file in dist/xiond_darwin_*/xiond; do
+            cp $file ${{ runner.temp }}/$(basename $(dirname $file) | sed 's/_/-/g')
+          done
+
+      - name: Upload arm64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiond-darwin-arm64
+          path: ${{ runner.temp }}/xiond-darwin-arm64
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Upload amd64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiond-darwin-amd64
+          path: ${{ runner.temp }}/xiond-darwin-amd64
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Upload all binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiond-darwin-all
+          path: ${{ runner.temp }}/xiond-darwin-all
+          retention-days: 3
+          if-no-files-found: error
+
   build-release-info:
     runs-on: ubuntu-latest
-    needs: build-docker
+    needs:
+      - build-docker
+      - build-darwin-images
     env:
       GH_TOKEN: ${{ github.token }}
 
@@ -79,8 +131,8 @@ jobs:
         id: binaries-json
         run: |
           set -Eeuo pipefail
-          ls xiond-* | while read -r file; do
-            platform=$(echo $file | cut -d- -f3- | sed -E 's/^rc[0-9]*-//g; s/\//-/g')
+          ls xiond-* | grep -v 'xiond-darwin-all' | while read -r file; do
+            platform=$(echo $file | cut -d- -f2- | sed -E 's/^rc[0-9]*-//g; s/-/\//g')
             checksum=$(sha256sum "$file" | awk '{ print $1 }')
             echo "$platform: https://github.com/burnt-labs/xion/releases/download/${{ github.ref_name }}/$file?checksum=sha256:$checksum"
           done | yq '{"binaries": .}' -o json | tee binaries.json
@@ -90,11 +142,12 @@ jobs:
         with:
           name: binaries.json
           path: release/binaries.json
-          retention-days: 1
+          retention-days: 3
+          if-no-files-found: error
 
       - name: Create version.json
         working-directory: release
-        run : |
+        run: |
           set -Eeuo pipefail
           upgrade_name=$(echo $GITHUB_REF_NAME | cut -d. -f1)
           jq -s '.[0] * (.[1] // {})' <(go mod edit -json | jq --arg name $upgrade_name '{
@@ -118,7 +171,8 @@ jobs:
         with:
           name: version.json
           path: release/version.json
-          retention-days: 1
+          retention-days: 3
+          if-no-files-found: error
 
   build-release:
     needs:
@@ -128,6 +182,7 @@ jobs:
       - docker-scout
       - interchain-tests
       - build-release-info
+      - build-darwin-images
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -235,7 +290,7 @@ jobs:
       - name: Download json artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: '*.json'
+          pattern: "*.json"
           path: /tmp
           merge-multiple: true
 
